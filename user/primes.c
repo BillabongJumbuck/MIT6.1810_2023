@@ -17,7 +17,6 @@ main(int argv, char *argc[])
         for (int i = 2; i <= 35; i++)
         {
             write(p[1], &i, sizeof i);
-            // fprintf(1, "%d: send %d\n", getpid(), i);
         }
         close(p[1]);
     }
@@ -29,17 +28,16 @@ void subprocess(int rfd)
 {
     int this_prime;
     read(rfd, &this_prime, sizeof this_prime);
-    // fprintf(1, "%d: read %d\n", getpid(), this_prime);
     fprintf(1, "prime %d\n", this_prime);
     int num;
     int is_first = 1;
     int p[2];
     pipe(p);
     while(read(rfd, &num, sizeof num) != 0) {
-        // fprintf(1, "%d: while_read %d\n", getpid(), num);
         if (num % this_prime != 0){
             if (is_first) {
                 if(fork() == 0) {
+                    close(rfd);
                     close(p[1]);
                     subprocess(p[0]);
                     return;
@@ -48,12 +46,10 @@ void subprocess(int rfd)
                 } 
             }
             write(p[1], &num, sizeof num);
-            // fprintf(1, "%d: send %d\n", getpid(), num);
         }
     }
-    // fprintf(1, "%d exit.\n", getpid());
-    close(p[0]);
+    // close(p[0]);
     close(p[1]);
-    close(rfd);
+    // close(rfd);
     wait((int*)0);
 }
