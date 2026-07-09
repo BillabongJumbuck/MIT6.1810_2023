@@ -106,6 +106,7 @@ atoi(const char *s)
   return n;
 }
 
+// copy memory from vsrc to vdst
 void*
 memmove(void *vdst, const void *vsrc, int n)
 {
