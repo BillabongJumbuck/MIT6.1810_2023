@@ -57,7 +57,7 @@ void find(char *const path, char * const name)
         case T_DEVICE:
         case T_FILE:
             if (compare_name(path, name)){
-                printf("%s\n", path);
+                fprintf(1, "%s\n", path);
             }
             break;
         case T_DIR:
