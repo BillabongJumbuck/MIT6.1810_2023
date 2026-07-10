@@ -71,7 +71,7 @@ void find(char *const path, char * const name)
             p++;
             while(read(fd, &de, sizeof(de)) == sizeof(de)) {
                 if(de.inum == 0)
-                    continue;
+                    continue; // inum == 0 means this entry is unused or empty
                 if (dir_check(de.name) == 0) {
                     char *tmp = p;
                     memmove(tmp, de.name, DIRSIZ);
