@@ -251,6 +251,8 @@ userinit(void)
 
   p->state = RUNNABLE;
 
+  p->trace_mask = 0x0;
+
   release(&p->lock);
 }
 
@@ -311,6 +313,7 @@ fork(void)
   safestrcpy(np->name, p->name, sizeof(p->name));
 
   pid = np->pid;
+  np->trace_mask = p->trace_mask;
 
   release(&np->lock);
 
