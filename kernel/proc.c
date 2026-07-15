@@ -146,6 +146,8 @@ found:
   p->context.ra = (uint64)forkret;
   p->context.sp = p->kstack + PGSIZE;
 
+  p -> trace_mask = 0x0;
+
   return p;
 }
 
@@ -250,8 +252,6 @@ userinit(void)
   p->cwd = namei("/");
 
   p->state = RUNNABLE;
-
-  p->trace_mask = 0x0;
 
   release(&p->lock);
 }
