@@ -1,5 +1,10 @@
 #include "types.h"
 #include "param.h"
+
+#ifndef LAB_PGTBL
+#define LAB_PGTBL
+#endif
+
 #include "memlayout.h"
 #include "riscv.h"
 #include "spinlock.h"
@@ -202,6 +207,25 @@ proc_pagetable(struct proc *p)
     return 0;
   }
 
+
+  // save usyscall information
+  struct usyscall* p_usycall = kalloc();
+  if(p_usycall == 0) {
+    uvmunmap(pagetable, TRAPFRAME, 1, 0);
+    uvmunmap(pagetable, TRAMPOLINE, 1, 0);
+    uvmfree(pagetable, 0);
+    return 0;
+  } else {
+    p_usycall -> pid = p->pid;
+    if(mappages(pagetable, USYSCALL, PGSIZE, (uint64)p_usycall, PTE_U | PTE_R) < 0) {
+        uvmunmap(pagetable, TRAPFRAME, 1, 0);
+        uvmunmap(pagetable, TRAMPOLINE, 1, 0);
+        uvmfree(pagetable, 0);
+        return 0;
+    }
+  }
+    
+
   return pagetable;
 }
 
@@ -212,6 +236,8 @@ proc_freepagetable(pagetable_t pagetable, uint64 sz)
 {
   uvmunmap(pagetable, TRAMPOLINE, 1, 0);
   uvmunmap(pagetable, TRAPFRAME, 1, 0);
+  // free USYSCALL PAGE
+  uvmunmap(pagetable, USYSCALL, 1, 1);
   uvmfree(pagetable, sz);
 }
 
