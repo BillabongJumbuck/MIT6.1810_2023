@@ -221,6 +221,7 @@ proc_pagetable(struct proc *p)
         uvmunmap(pagetable, TRAPFRAME, 1, 0);
         uvmunmap(pagetable, TRAMPOLINE, 1, 0);
         uvmfree(pagetable, 0);
+        kfree(p_usycall);
         return 0;
     }
   }
