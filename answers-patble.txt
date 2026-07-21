@@ -1,0 +1,11 @@
+Q1: Which other xv6 system call(s) could be made faster using this shared page? Explain how.
+A1: uptime syscall. It dosen't change by user process. And it is lightweight.
+
+Q2: For every leaf page in the vmprint output, explain what it logically contains and what its permission bits are.
+A2：pte 0x0000000021fd9c1b - text
+    pte 0x0000000021fd9017 - data
+    pte 0x0000000021fd8c07 - stack page guade
+    pte 0x0000000021fd8817 - data
+    pte 0x0000000021fda013 - USYSCALL
+    pte 0x0000000021fdd007 - TRAPFRAME
+    pte 0x0000000020001c0b - TRAMPOLINE
