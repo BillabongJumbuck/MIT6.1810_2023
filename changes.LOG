@@ -1,116 +1,66 @@
-diff --git a/changes.LOG b/changes.LOG
-index 82bb182..e69de29 100644
---- a/changes.LOG
-+++ b/changes.LOG
-@@ -1,50 +0,0 @@
--diff --git a/kernel/proc.c b/kernel/proc.c
--index 58a8a0b..7c583ce 100644
----- a/kernel/proc.c
--+++ b/kernel/proc.c
--@@ -1,5 +1,10 @@
-- #include "types.h"
-- #include "param.h"
--+
--+#ifndef LAB_PGTBL
--+#define LAB_PGTBL
--+#endif
--+
-- #include "memlayout.h"
-- #include "riscv.h"
-- #include "spinlock.h"
--@@ -202,6 +207,25 @@ proc_pagetable(struct proc *p)
--     return 0;
--   }
-- 
--+
--+  // save usyscall information
--+  struct usyscall* p_usycall = kalloc();
--+  if(p_usycall == 0) {
--+    uvmunmap(pagetable, TRAPFRAME, 1, 0);
--+    uvmunmap(pagetable, TRAMPOLINE, 1, 0);
--+    uvmfree(pagetable, 0);
--+    return 0;
--+  } else {
--+    p_usycall -> pid = p->pid;
--+    if(mappages(pagetable, USYSCALL, PGSIZE, (uint64)p_usycall, PTE_U | PTE_R) < 0) {
--+        uvmunmap(pagetable, TRAPFRAME, 1, 0);
--+        uvmunmap(pagetable, TRAMPOLINE, 1, 0);
--+        uvmfree(pagetable, 0);
--+        return 0;
--+    }
--+  }
--+    
--+
--   return pagetable;
-- }
-- 
--@@ -212,6 +236,8 @@ proc_freepagetable(pagetable_t pagetable, uint64 sz)
-- {
--   uvmunmap(pagetable, TRAMPOLINE, 1, 0);
--   uvmunmap(pagetable, TRAPFRAME, 1, 0);
--+  // free USYSCALL PAGE
--+  uvmunmap(pagetable, USYSCALL, 1, 1);
--   uvmfree(pagetable, sz);
-- }
-- 
-diff --git a/kernel/defs.h b/kernel/defs.h
-index a3c962b..487f4f2 100644
---- a/kernel/defs.h
-+++ b/kernel/defs.h
-@@ -173,6 +173,7 @@ uint64          walkaddr(pagetable_t, uint64);
- int             copyout(pagetable_t, uint64, char *, uint64);
- int             copyin(pagetable_t, char *, uint64, uint64);
- int             copyinstr(pagetable_t, char *, uint64, uint64);
-+void            vmprint(pagetable_t);
+diff --git a/kernel/riscv.h b/kernel/riscv.h
+index 20a01db..efbb6f5 100644
+--- a/kernel/riscv.h
++++ b/kernel/riscv.h
+@@ -343,6 +343,7 @@ typedef uint64 *pagetable_t; // 512 PTEs
+ #define PTE_W (1L << 2)
+ #define PTE_X (1L << 3)
+ #define PTE_U (1L << 4) // user can access
++#define PTE_A (1L << 6) // access bit
  
- // plic.c
- void            plicinit(void);
-diff --git a/kernel/exec.c b/kernel/exec.c
-index e18bbb6..9105705 100644
---- a/kernel/exec.c
-+++ b/kernel/exec.c
-@@ -128,6 +128,8 @@ exec(char *path, char **argv)
-   p->trapframe->sp = sp; // initial stack pointer
-   proc_freepagetable(oldpagetable, oldsz);
- 
-+  vmprint(pagetable);
+ // shift a physical address to the right place for a PTE.
+ #define PA2PTE(pa) ((((uint64)pa) >> 12) << 10)
+diff --git a/kernel/sysproc.c b/kernel/sysproc.c
+index 88644b2..37cabd1 100644
+--- a/kernel/sysproc.c
++++ b/kernel/sysproc.c
+@@ -2,6 +2,11 @@
+ #include "riscv.h"
+ #include "param.h"
+ #include "defs.h"
 +
-   return argc; // this ends up in a0, the first argument to main(argc, argv)
- 
-  bad:
-diff --git a/kernel/vm.c b/kernel/vm.c
-index 5c31e87..30208ff 100644
---- a/kernel/vm.c
-+++ b/kernel/vm.c
-@@ -449,3 +449,30 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
-     return -1;
-   }
- }
++#ifndef LAB_PGTBL
++#define LAB_PGTBL
++#endif
 +
-+void vmprintpte(pagetable_t pagetable, int indent)
-+{
-+  for(int i=0; i < 512; i++){
-+    pte_t pte = pagetable[i];
-+    if(pte & PTE_V){
-+      uint64 pa = PTE2PA(pte);
-+      for(int j=1; j <= indent; j++){
-+        printf("..");
-+        if(j < indent){
-+          printf(" ");
-+        }
-+      }
-+      printf("%d: pte %p pa %p\n", i, pte, pa);
-+      if((pte & (PTE_R | PTE_W | PTE_X)) == 0) {
-+        // this PTE points to a lower-level page table.
-+        vmprintpte((pagetable_t)pa, indent + 1);
+ #include "memlayout.h"
+ #include "spinlock.h"
+ #include "proc.h"
+@@ -74,7 +79,36 @@ sys_sleep(void)
+ int
+ sys_pgaccess(void)
+ {
+-  // lab pgtbl: your code here.
++  uint64 va;
++  argaddr(0, &va);
++  int nr_pages;
++  argint(1, &nr_pages);
++  uint64 pr_abits;
++  argaddr(2, &pr_abits);
++
++  if(nr_pages > 32) {
++    return -1;      // we set the upper limit on the number of pages that can be scanned to 32.
++  }
++  
++  uint32 bitmap = 0;
++  pagetable_t pagetable = myproc() -> pagetable;
++
++  for(int i=0; i < nr_pages; i++) {
++    pte_t* pte = walk(pagetable, va, 0);
++    if(pte == 0){
++      return -1; // walk error
++    }
++
++    if(*pte & PTE_V){
++      if(*pte & PTE_A){
++        bitmap |= (1 << i);
++        *pte &= (~PTE_A);
 +      }
 +    }
++    va += PGSIZE;
 +  }
-+}
 +
-+void vmprint(pagetable_t pagetable)
-+{
-+  printf("page table %p\n", pagetable);
-+  vmprintpte(pagetable, 1);
-+}
-\ No newline at end of file
++  copyout(pagetable, pr_abits, (char*)&bitmap, 4);
+   return 0;
+ }
+ #endif

@@ -2,6 +2,11 @@
 #include "riscv.h"
 #include "param.h"
 #include "defs.h"
+
+#ifndef LAB_PGTBL
+#define LAB_PGTBL
+#endif
+
 #include "memlayout.h"
 #include "spinlock.h"
 #include "proc.h"
@@ -74,7 +79,38 @@ sys_sleep(void)
 int
 sys_pgaccess(void)
 {
-  // lab pgtbl: your code here.
+  uint64 va;
+  argaddr(0, &va);
+  int nr_pages;
+  argint(1, &nr_pages);
+  uint64 pr_abits;
+  argaddr(2, &pr_abits);
+
+  if(nr_pages > 32) {
+    return -1;      // we set the upper limit on the number of pages that can be scanned to 32.
+  }
+  
+  uint32 bitmap = 0;
+  pagetable_t pagetable = myproc() -> pagetable;
+
+  for(int i=0; i < nr_pages; i++) {
+    pte_t* pte = walk(pagetable, va, 0);
+    if(pte == 0){
+      return -1; // walk error
+    }
+
+    if(*pte & PTE_V){
+      if(*pte & PTE_A){
+        bitmap |= (1 << i);
+        *pte &= (~PTE_A);
+      }
+    }
+    va += PGSIZE;
+  }
+
+  if(copyout(pagetable, pr_abits, (char*)&bitmap, 4) < 0){
+    return -1;
+  };
   return 0;
 }
 #endif
