@@ -146,6 +146,12 @@ found:
   p->context.ra = (uint64)forkret;
   p->context.sp = p->kstack + PGSIZE;
 
+  p->alarm_interval = 0;
+  p->alarm_handle = (void (*)())0;
+  p->nr_ticks = 0;
+  p->tf2 = (struct trapframe*)0;
+  p->alarm_nested = 0;
+
   return p;
 }
 
@@ -158,6 +164,11 @@ freeproc(struct proc *p)
   if(p->trapframe)
     kfree((void*)p->trapframe);
   p->trapframe = 0;
+  if(p->tf2) {
+    kfree((void*)p->tf2);
+    uvmunmap(p->pagetable, TRAPFRAME2, 1, 0);
+  }
+  p->tf2 = 0;
   if(p->pagetable)
     proc_freepagetable(p->pagetable, p->sz);
   p->pagetable = 0;
