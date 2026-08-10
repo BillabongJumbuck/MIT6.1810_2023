@@ -489,17 +489,18 @@ handle_copy_on_write(uint64 va, pagetable_t pagetable)
   int flags = PTE_FLAGS(*pte);
   uint64 mem = pa;
   if(get_page_ref_count(pa) > 1){
-    uvmunmap(pagetable, va, 1, 1);
     if((mem = (uint64)kalloc()) == 0) {
       return -1; // memory not enough
     }
+
+    // move firt then unmap to avoid data race!
     memmove((char*)mem, (char*)pa, PGSIZE);
+    uvmunmap(pagetable, va, 1, 1);
 
     flags &= ~PTE_C;
     flags |= PTE_W;
-    if(mappages(pagetable, va, PGSIZE, (uint64)mem, flags) != 0){
-      return -1; // maps failed.
-    }
+    // in-place revise pte
+    *pte = PA2PTE(mem) | flags;
   } else {
     *pte &= ~PTE_C;
     *pte |= PTE_W;
