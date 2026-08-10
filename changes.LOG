@@ -1,0 +1,303 @@
+diff --git a/kernel/defs.h b/kernel/defs.h
+index a3c962b..3b04b48 100644
+--- a/kernel/defs.h
++++ b/kernel/defs.h
+@@ -63,6 +63,8 @@ void            ramdiskrw(struct buf*);
+ void*           kalloc(void);
+ void            kfree(void *);
+ void            kinit(void);
++void            add_page_ref_count(uint64 pa, int ref_count);
++int             get_page_ref_count(uint64 pa);
+ 
+ // log.c
+ void            initlog(int, struct superblock*);
+@@ -80,6 +82,7 @@ int             pipewrite(struct pipe*, uint64, int);
+ void            printf(char*, ...);
+ void            panic(char*) __attribute__((noreturn));
+ void            printfinit(void);
++void            backtrace(void);
+ 
+ // proc.c
+ int             cpuid(void);
+@@ -173,6 +176,7 @@ uint64          walkaddr(pagetable_t, uint64);
+ int             copyout(pagetable_t, uint64, char *, uint64);
+ int             copyin(pagetable_t, char *, uint64, uint64);
+ int             copyinstr(pagetable_t, char *, uint64, uint64);
++int             handle_copy_on_write(uint64 stval, pagetable_t pagetable);
+ 
+ // plic.c
+ void            plicinit(void);
+diff --git a/kernel/kalloc.c b/kernel/kalloc.c
+index 0699e7e..5705ae7 100644
+--- a/kernel/kalloc.c
++++ b/kernel/kalloc.c
+@@ -13,6 +13,7 @@ void freerange(void *pa_start, void *pa_end);
+ 
+ extern char end[]; // first address after kernel.
+                    // defined by kernel.ld.
++int page_ref_count[(PHYSTOP - KERNBASE) / PGSIZE];
+ 
+ struct run {
+   struct run *next;
+@@ -27,7 +28,11 @@ void
+ kinit()
+ {
+   initlock(&kmem.lock, "kmem");
+-  freerange(end, (void*)PHYSTOP);
++  char *p = (char*)PGROUNDUP((uint64)end);
++  for(; p + PGSIZE <= (char*)PHYSTOP; p += PGSIZE) {
++    page_ref_count[((uint64)p - KERNBASE) >> PGSHIFT] = 0;
++    kfree(p);
++  }
+ }
+ 
+ void
+@@ -51,6 +56,14 @@ kfree(void *pa)
+   if(((uint64)pa % PGSIZE) != 0 || (char*)pa < end || (uint64)pa >= PHYSTOP)
+     panic("kfree");
+ 
++  acquire(&kmem.lock);
++  if(page_ref_count[((uint64)pa - KERNBASE) >> PGSHIFT] > 1) {
++    page_ref_count[((uint64)pa - KERNBASE) >> PGSHIFT]--;
++    release(&kmem.lock);
++    return;
++  }
++  release(&kmem.lock);
++
+   // Fill with junk to catch dangling refs.
+   memset(pa, 1, PGSIZE);
+ 
+@@ -59,6 +72,7 @@ kfree(void *pa)
+   acquire(&kmem.lock);
+   r->next = kmem.freelist;
+   kmem.freelist = r;
++  page_ref_count[((uint64)pa - KERNBASE) >> PGSHIFT] = 0;
+   release(&kmem.lock);
+ }
+ 
+@@ -72,11 +86,30 @@ kalloc(void)
+ 
+   acquire(&kmem.lock);
+   r = kmem.freelist;
+-  if(r)
++  if(r) {
++    page_ref_count[((uint64)r - KERNBASE) >> PGSHIFT] = 1;
+     kmem.freelist = r->next;
++  }
+   release(&kmem.lock);
+ 
+   if(r)
+     memset((char*)r, 5, PGSIZE); // fill with junk
+   return (void*)r;
+ }
++
++void 
++add_page_ref_count(uint64 pa, int ref_count)
++{
++  acquire(&kmem.lock);
++  page_ref_count[(pa - KERNBASE) >> PGSHIFT] += ref_count;
++  release(&kmem.lock);
++}
++
++int
++get_page_ref_count(uint64 pa) {
++  int count = 0;
++  acquire(&kmem.lock);
++  count = page_ref_count[(pa - KERNBASE) >> PGSHIFT];
++  release(&kmem.lock);
++  return count;
++}
+diff --git a/kernel/printf.c b/kernel/printf.c
+index 1a50203..dac6f8c 100644
+--- a/kernel/printf.c
++++ b/kernel/printf.c
+@@ -122,6 +122,7 @@ panic(char *s)
+   printf("panic: ");
+   printf(s);
+   printf("\n");
++  backtrace();
+   panicked = 1; // freeze uart output from other CPUs
+   for(;;)
+     ;
+@@ -133,3 +134,15 @@ printfinit(void)
+   initlock(&pr.lock, "pr");
+   pr.locking = 1;
+ }
++
++void
++backtrace(void)
++{
++  printf("backtrace:\n");
++  uint64 top_fp = r_fp();
++  uint64 this_fp = top_fp;
++  while(PGROUNDDOWN(top_fp) == PGROUNDDOWN(this_fp)) {
++    printf("%p\n", *(uint64*)(this_fp-8));
++    this_fp = *(uint64*)(this_fp-16);
++  }
++}
+\ No newline at end of file
+diff --git a/kernel/riscv.h b/kernel/riscv.h
+index 20a01db..c86c48f 100644
+--- a/kernel/riscv.h
++++ b/kernel/riscv.h
+@@ -319,6 +319,14 @@ r_ra()
+   return x;
+ }
+ 
++static inline uint64
++r_fp()
++{
++  uint64 x;
++  asm volatile("mv %0, s0" : "=r" (x) );
++  return x;
++}
++
+ // flush the TLB.
+ static inline void
+ sfence_vma()
+@@ -343,6 +351,7 @@ typedef uint64 *pagetable_t; // 512 PTEs
+ #define PTE_W (1L << 2)
+ #define PTE_X (1L << 3)
+ #define PTE_U (1L << 4) // user can access
++#define PTE_C (1L << 8) // Copy-on-write page
+ 
+ // shift a physical address to the right place for a PTE.
+ #define PA2PTE(pa) ((((uint64)pa) >> 12) << 10)
+diff --git a/kernel/trap.c b/kernel/trap.c
+index 512c850..13908b3 100644
+--- a/kernel/trap.c
++++ b/kernel/trap.c
+@@ -68,9 +68,20 @@ usertrap(void)
+   } else if((which_dev = devintr()) != 0){
+     // ok
+   } else {
+-    printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
+-    printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
+-    setkilled(p);
++    uint64 scause = r_scause();
++    uint64 sepc = r_sepc();
++    uint64 stval = r_stval();
++    int err = 1;
++    if (scause == 15L) {
++      if (handle_copy_on_write(stval, p->pagetable) == 0) {
++        err = 0;
++      }
++    } 
++    if(err) {
++      printf("usertrap(): unexpected scause %p pid=%d\n", scause, p->pid);
++      printf("            sepc=%p stval=%p\n", sepc, stval);
++      setkilled(p);
++    }
+   }
+ 
+   if(killed(p))
+@@ -218,4 +229,3 @@ devintr()
+     return 0;
+   }
+ }
+-
+diff --git a/kernel/vm.c b/kernel/vm.c
+index 5c31e87..d76c088 100644
+--- a/kernel/vm.c
++++ b/kernel/vm.c
+@@ -315,7 +315,6 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
+   pte_t *pte;
+   uint64 pa, i;
+   uint flags;
+-  char *mem;
+ 
+   for(i = 0; i < sz; i += PGSIZE){
+     if((pte = walk(old, i, 0)) == 0)
+@@ -323,12 +322,19 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
+     if((*pte & PTE_V) == 0)
+       panic("uvmcopy: page not present");
+     pa = PTE2PA(*pte);
++    // 1. W = 1 -> W = 0, C = 1.
++    // 2. W = 0, C = 0 -> W = 0, C = 0.
++    // 3. W = 0, C = 1 -> W = 0, C = 1. 
++    if((*pte & PTE_W)) {
++      *pte &= ~PTE_W;
++      *pte |= PTE_C;
++    }
+     flags = PTE_FLAGS(*pte);
+-    if((mem = kalloc()) == 0)
+-      goto err;
+-    memmove(mem, (char*)pa, PGSIZE);
+-    if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
+-      kfree(mem);
++    // if((mem = kalloc()) == 0)
++    //   goto err;
++    // memmove(mem, (char*)pa, PGSIZE);
++    add_page_ref_count(pa, 1);
++    if(mappages(new, i, PGSIZE, (uint64)pa, flags) != 0){
+       goto err;
+     }
+   }
+@@ -366,9 +372,15 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
+     if(va0 >= MAXVA)
+       return -1;
+     pte = walk(pagetable, va0, 0);
+-    if(pte == 0 || (*pte & PTE_V) == 0 || (*pte & PTE_U) == 0 ||
+-       (*pte & PTE_W) == 0)
++    if(pte == 0 || (*pte & PTE_V) == 0 || (*pte & PTE_U) == 0)
+       return -1;
++    if((*pte & PTE_W) == 0) {
++      if(*pte & PTE_C) {
++        handle_copy_on_write(va0, pagetable);
++      } else {
++        return -1;
++      }
++    }
+     pa0 = PTE2PA(*pte);
+     n = PGSIZE - (dstva - va0);
+     if(n > len)
+@@ -449,3 +461,48 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
+     return -1;
+   }
+ }
++
++int 
++handle_copy_on_write(uint64 va, pagetable_t pagetable)
++{
++  if (va >= MAXVA) {
++    return -1;
++  }
++  va = PGROUNDDOWN(va);
++  pte_t* pte = walk(pagetable, va, 0);
++
++  if((*pte & PTE_U) == 0) {
++    // try to write a kernel page!
++    return -1;
++  }
++
++  if((*pte & PTE_V) == 0) {
++    // try to write a invalid page!
++    return -1;
++  }
++
++  if((*pte & PTE_C) == 0) {
++    // NOT A COW PAGE!
++    return -1;
++  }
++  uint64 pa = PTE2PA(*pte);
++  int flags = PTE_FLAGS(*pte);
++  uint64 mem = pa;
++  if(get_page_ref_count(pa) > 1){
++    uvmunmap(pagetable, va, 1, 1);
++    if((mem = (uint64)kalloc()) == 0) {
++      return -1; // memory not enough
++    }
++    memmove((char*)mem, (char*)pa, PGSIZE);
++
++    flags &= ~PTE_C;
++    flags |= PTE_W;
++    if(mappages(pagetable, va, PGSIZE, (uint64)mem, flags) != 0){
++      return -1; // maps failed.
++    }
++  } else {
++    *pte &= ~PTE_C;
++    *pte |= PTE_W;
++  }
++  return 0;
++}
+\ No newline at end of file
