@@ -1,0 +1,8 @@
+Q: Why are there missing keys with 2 threads, but not with 1 thread? Identify a sequence of events with 2 threads that can lead to a key being missing?
+
+A: The keys inserted by two put threads may hash to the same bucket. 
+Suppose both threads read the same current bucket head before either updates it. 
+Each thread creates a new entry whose next pointer points to that old head. 
+Then both threads write their new entry to table[i]. 
+The later write overwrites the earlier write to the bucket head, so the entry inserted by the first thread becomes unreachable from the hash table. 
+As a result, that key is missing.
