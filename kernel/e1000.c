@@ -102,7 +102,52 @@ e1000_transmit(struct mbuf *m)
   // the TX descriptor ring so that the e1000 sends it. Stash
   // a pointer so that it can be freed after sending.
   //
-  
+  // printf("try acquire in tx! cpuid = %p\n", r_tp());
+  acquire(&e1000_lock);
+  // printf("Acquire in tx! cpuid = %p\n", r_tp());
+  uint32 tdt = regs[E1000_TDT];
+  uint32 tbdal = regs[E1000_TDBAL];
+  uint32 tdbah = regs[E1000_TDBAL+1];
+  uint64 tdba = tdbah;
+  tdba <<= 32;
+  tdba |= tbdal;
+
+  while (m != 0) {
+    // printf("tdt = %d, TDT = %d, TDH = %d\n", tdt, regs[E1000_TDT], regs[E1000_TDH]);
+    
+    struct tx_desc *tx_d = (struct tx_desc*)(tdba + tdt * 16);
+    
+    if ((tx_d->status & E1000_TXD_STAT_DD) == 0) {
+      // RING OVERFLOW!
+      release(&e1000_lock);
+      printf("of tx\n");
+      return -1;
+    }
+    
+    // if (tx_d->addr != 0 ) {
+    //   mbuffree((struct mbuf*)(tx_d->addr - sizeof(struct mbuf*)));
+    // }
+
+    tx_d->addr = (uint64)m->head;
+    tx_d->length = m->len;
+    tx_d->cmd |= E1000_TXD_CMD_RS;
+    tx_d->status &= (~E1000_TXD_STAT_DD);
+
+    m = m->next;
+    if (m == 0) {
+      tx_d->cmd |= E1000_TXD_CMD_EOP;
+    } else {
+      tx_d->cmd &= (~E1000_TXD_CMD_EOP);
+    }
+    tx_d->status &= (~E1000_TXD_STAT_DD);
+
+    tdt = (tdt + 1) % TX_RING_SIZE;
+    regs[E1000_TDT] = tdt;
+  }
+
+  // printf("release in tx! cpuid = %p\n", r_tp());
+  release(&e1000_lock);
+
   return 0;
 }
 
@@ -115,6 +160,57 @@ e1000_recv(void)
   // Check for packets that have arrived from the e1000
   // Create and deliver an mbuf for each packet (using net_rx()).
   //
+  acquire(&e1000_lock);
+  uint32 rdt = regs[E1000_RDT];
+  uint32 rbdal = regs[E1000_RDBAL];
+  uint32 rdbah = regs[E1000_RDBAL+1];
+  uint64 rdba = rdbah;
+  rdba <<= 32;
+  rdba |= rbdal;
+
+  struct rx_desc *rx_d;
+  struct mbuf *head = 0;
+  struct mbuf *cur;
+  struct mbufq mq;
+
+  mbufq_init(&mq);
+  for(;;){
+    rdt = (rdt + 1) % RX_RING_SIZE;
+    rx_d = (struct rx_desc*)(rdba + rdt * 16);
+    // printf("rdt = %d, RDT = %d, RDH = %d\n", rdt, regs[E1000_RDT], regs[E1000_RDH]);
+    if ((rx_d->status & E1000_RXD_STAT_DD) == 0) {
+      // no data !
+      // printf("empty!\n");
+      break;
+    }
+
+    struct mbuf *m = rx_mbufs[rdt];
+    m->len = rx_d->length;
+    rx_mbufs[rdt] = mbufalloc(0);
+    rx_mbufs[rdt]->head = (char*)rx_d->addr;
+    rx_d->status &= (~E1000_RXD_STAT_DD);
+    regs[E1000_RDT] = rdt;
+
+    if (head == 0){
+      head = m;
+    } else {
+      cur->next = m;
+    }
+    cur = m;
+    
+    if ((rx_d->status & E1000_RXD_STAT_EOP) != 0) {
+      mbufq_pushtail(&mq, head);
+      head = 0;
+      cur = 0;
+      rx_d->status &= (~E1000_RXD_STAT_EOP);
+    }
+  }
+
+  release(&e1000_lock);
+
+  while(!mbufq_empty(&mq)) {
+    net_rx(mbufq_pophead(&mq));
+  }
 }
 
 void
