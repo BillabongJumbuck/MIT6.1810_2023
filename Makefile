@@ -188,9 +188,6 @@ UPROGS=\
 	$U/_grind\
 	$U/_wc\
 	$U/_zombie\
-	$U/_mp \
-	$U/_sp \
-
 
 
 

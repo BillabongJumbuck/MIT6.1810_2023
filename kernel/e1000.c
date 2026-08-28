@@ -102,9 +102,7 @@ e1000_transmit(struct mbuf *m)
   // the TX descriptor ring so that the e1000 sends it. Stash
   // a pointer so that it can be freed after sending.
   //
-  // printf("try acquire in tx! cpuid = %p\n", r_tp());
   acquire(&e1000_lock);
-  // printf("Acquire in tx! cpuid = %p\n", r_tp());
   uint32 tdt = regs[E1000_TDT];
   uint32 tbdal = regs[E1000_TDBAL];
   uint32 tdbah = regs[E1000_TDBAL+1];
@@ -112,9 +110,7 @@ e1000_transmit(struct mbuf *m)
   tdba <<= 32;
   tdba |= tbdal;
 
-  while (m != 0) {
-    // printf("tdt = %d, TDT = %d, TDH = %d\n", tdt, regs[E1000_TDT], regs[E1000_TDH]);
-    
+  while (m != 0) {  
     struct tx_desc *tx_d = (struct tx_desc*)(tdba + tdt * 16);
     
     if ((tx_d->status & E1000_TXD_STAT_DD) == 0) {
@@ -145,7 +141,6 @@ e1000_transmit(struct mbuf *m)
     regs[E1000_TDT] = tdt;
   }
 
-  // printf("release in tx! cpuid = %p\n", r_tp());
   release(&e1000_lock);
 
   return 0;
@@ -177,10 +172,8 @@ e1000_recv(void)
   for(;;){
     rdt = (rdt + 1) % RX_RING_SIZE;
     rx_d = (struct rx_desc*)(rdba + rdt * 16);
-    // printf("rdt = %d, RDT = %d, RDH = %d\n", rdt, regs[E1000_RDT], regs[E1000_RDH]);
     if ((rx_d->status & E1000_RXD_STAT_DD) == 0) {
       // no data !
-      // printf("empty!\n");
       break;
     }
 
