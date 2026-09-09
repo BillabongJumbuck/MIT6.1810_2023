@@ -26,26 +26,11 @@ struct {
 void
 kinit()
 {
-  char *start = (char*)PGROUNDUP((uint64)end);
-  uint64 step = (((uint64)PHYSTOP - (uint64)start) / NCPU) & ~(PGSIZE-1);
   for(int i=0; i < NCPU; i++) {
     initlock(&kmem.lock[i], "kmem");
-
-    char* list_start = start + i * step;
-    char* list_end = start + (i + 1) * step;
-    if (i + 1 >= NCPU) {
-      list_end = (char*)PHYSTOP;
-    }
-
-    for(char *p = list_start; p + PGSIZE < list_end; p += PGSIZE) {
-      // kree
-      memset(p, 1, PGSIZE);
-      struct run *r = (struct run*)p;
-      r->next = kmem.freelist[i];
-      kmem.freelist[i] = r;
-    }
   }
-  printf("init end!\n");
+
+  freerange(end, (void*)PHYSTOP);
 }
 
 void
@@ -98,11 +83,11 @@ kalloc(void)
   if(r)
     kmem.freelist[hartid] = r->next;
   release(&kmem.lock[hartid]);
+  pop_off();
 
   if (r == 0) {
     // steal
-    for(int i =  (hartid + 1) % NCPU; i != hartid; i = (i + 1) % NCPU) {
-      // printf("%d steal %d\n", hartid, i);
+    for(int i = 0; i < NCPU; i++ ) {
       acquire(&kmem.lock[i]);
       r = kmem.freelist[i];
       if(r)
@@ -112,8 +97,6 @@ kalloc(void)
         break;
     }
   }
-
-  pop_off();
 
   if(r)
     memset((char*)r, 5, PGSIZE); // fill with junk
